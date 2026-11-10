@@ -513,6 +513,19 @@ void setup() {
     PRINTOUT(F("Using ModularSensors Library version"),
              MODULAR_SENSORS_VERSION);
     PRINTOUT(F("TinyGSM Library version"), TINYGSM_VERSION, '\n');
+
+    // [USB-AWAKE] Announce that this build skips sleep while USB Serial is
+    // open. ModularSensors' systemSleep() (LoggerBase.cpp) detaches and shuts
+    // off the USB peripheral, which would kill the Serial Monitor connection.
+    PRINTOUT(F("USB-awake mode: ENABLED (stays awake while Serial Monitor is "
+               "open)"));
+    // [USB-AWAKE] Show which behavior the D21 button has in this build; it is
+    // set by -DMS_LOGGERBASE_BUTTON_BENCH_TEST in platformio.ini build_flags.
+#if MS_LOGGERBASE_BUTTON_BENCH_TEST
+    PRINTOUT(F("Button D21 mode: BENCH TEST (25 readings, 5 s apart)"));
+#else
+    PRINTOUT(F("Button D21 mode: LOG NOW (one reading)"));
+#endif
     PRINTOUT(F("Processor:"), mcuBoard.getSensorLocation());
     PRINTOUT(F("The most recent reset cause was"), mcuBoard.getLastResetCode(),
              '(', mcuBoard.getLastResetCause(), ")\n");
@@ -671,22 +684,44 @@ void loop() {
     // Note:  Please change these battery voltages to match your battery
     // At very low battery, just go back to sleep
     startSerials();
+
+    // [USB-AWAKE] Give the USB Serial port up to 1500 ms to report that a PC
+    // has it open. If it does, we skip sleeping this pass, because
+    // systemSleep() in ModularSensors LoggerBase.cpp shuts off USB and the
+    // Serial Monitor would disconnect. With no PC attached, behave as normal.
+    uint32_t usbWaitStart = millis();
+    while (!Serial && (millis() - usbWaitStart < 1500L)) {}
+    bool usbConnected = (bool)Serial;
+    bool sleepAfter   = !usbConnected;
+    if (usbConnected) { PRINTOUT(F("USB connected - staying awake")); }
+
     float batteryVoltage = getPrimaryBatteryVoltage();
     PRINTOUT(F("Current battery voltage:"), batteryVoltage, F("V"));
     if (batteryVoltage < 3.4) {
         PRINTOUT(F("Battery too low, ("), batteryVoltage,
                  F("V) going back to sleep."));
-        dataLogger.systemSleep();
+        // [USB-AWAKE] Only sleep when USB is not connected; sleeping turns off
+        // USB (LoggerBase.cpp systemSleep()).
+        if (sleepAfter) { dataLogger.systemSleep(); }
     } else if (batteryVoltage < 3.55) {
         // At moderate voltage, log data but don't send it over the modem
         PRINTOUT(F("Battery at"), batteryVoltage,
                  F("V; high enough to log, but will not publish!"));
-        dataLogger.logData();
+        // [USB-AWAKE] Pass sleepAfter so the logger stays awake (USB on) while
+        // the Serial Monitor is open.
+        dataLogger.logData(sleepAfter);
     } else {
         // If the battery is good, send the data to the world
         PRINTOUT(F("Battery at"), batteryVoltage,
                  F("V; high enough to log and publish data"));
-        dataLogger.logDataAndPublish();
+        // [USB-AWAKE] Pass sleepAfter so the logger stays awake (USB on) while
+        // the Serial Monitor is open.
+        dataLogger.logDataAndPublish(sleepAfter);
     }
+
+    // [USB-AWAKE] When awake on USB, loop() repeats immediately instead of
+    // sleeping until the next alarm; a short pause keeps it from spinning flat
+    // out. (The logger itself still only takes a reading at its interval.)
+    if (!sleepAfter) delay(500);
 }
 /** End [simple_loop] */
